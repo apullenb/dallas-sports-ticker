@@ -1,0 +1,53 @@
+name: Ticker checks
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+
+jobs:
+  import-source:
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' &&
+      github.event.before == 'c2db499801ff62f82e1d5484d484aa6390a3d23d'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      commit: ${{ steps.import.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Import the uploaded source archive
+        id: import
+        run: |
+          set -euo pipefail
+          archive=Dallas-Sports-Ticker-source.zip
+          if [[ ! -f "$archive" ]]; then
+            echo "The source archive is no longer present."
+            exit 0
+          fi
+          printf '%s  %s\n' c298af450d49913838d1c1e6a82251dbd15679028c74c6d0825be15f3dc3d0cc "$archive" | sha256sum --check
+          # Stop if the source paths may have been edited since the archive upload.
+          git diff --exit-code c2db499801ff62f82e1d5484d484aa6390a3d23d HEAD -- . ':(exclude).github/workflows/ci.yml'
+          unzip -oq "$archive" -x '.github/workflows/ci.yml'
+          git rm -- "$archive"
+          git add --all
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'Import Dallas Sports Ticker source'
+          git push origin HEAD:refs/heads/main
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  verify:
+    needs: import-source
+    if: ${{ !cancelled() && (needs.import-source.result == 'success' || needs.import-source.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.import-source.outputs.commit || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install
+      - run: npm test
+      - run: npm run build
+      - run: python3 -m py_compile firmware/code.py
